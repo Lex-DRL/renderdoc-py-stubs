@@ -1,0 +1,5 @@
+﻿migration:
+https://github.com/chadrik/doc484
+https://github.com/ilevkivskyi/com2ann
+
+Py3 annotations support for sphinx: https://github.com/agronholm/sphinx-autodoc-typehints
