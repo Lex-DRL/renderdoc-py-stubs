@@ -1,0 +1,49 @@
+﻿# Auto-detect text/binary by default:
+*    text=auto eol=lf
+
+# Common text files
+*.[Tt][Xx][Tt] text
+*.[Cc][Ss][Vv] text
+*.[Mm][Dd]5 text
+*.[Mm][Dd] text
+*.[Jj][Ss][Oo][Nn] text
+
+# Script source files
+*.[Pp][Yy] diff=python text
+*.[Cc][Ss] diff=csharp text
+*.[Cc][Ss][Ss] diff=css text
+*.[Xx][Mm][Ll] diff=html text
+*.[Hh][Tt][Mm] diff=html text
+*.[Hh][Tt][Mm][Ll] diff=html text
+
+# OS scripts
+*.[Bb][Aa][Tt] text
+*.[Cc][Mm][Dd] text
+*.[Pp][Ss]1 text
+*.[Pp][Ll] text
+*.[Ss][Hh] text
+
+
+# -----------------------------------------------
+# LFS binary formats
+# -----------------------------------------------
+
+# Archives
+*.7[Zz] filter=lfs diff=lfs merge=lfs -text
+*.[Zz][Ii][Pp] filter=lfs diff=lfs merge=lfs -text
+*.[RrTt][Aa][Rr] filter=lfs diff=lfs merge=lfs -text
+*.[Gg][Zz] filter=lfs diff=lfs merge=lfs -text
+
+# Fonts
+*.[OoTt][Tt][Ff] filter=lfs diff=lfs merge=lfs -text
+
+# OS libraries
+*.[Dd][Ll][Ll] filter=lfs diff=lfs merge=lfs -text
+*.[Ss][Oo] filter=lfs diff=lfs merge=lfs -text
+*.[Ss][Yy][Ss] filter=lfs diff=lfs merge=lfs -text
+*.[Bb][Yy][Tt][Ee][Ss] filter=lfs diff=lfs merge=lfs -text
+
+# Python binaries:
+*.[Pp][Yy][Dd] filter=lfs diff=lfs merge=lfs -text
+*.[Pp][Dd][Bb] filter=lfs diff=lfs merge=lfs -text
+*.[Ww][Hh][Ll] filter=lfs diff=lfs merge=lfs -text
