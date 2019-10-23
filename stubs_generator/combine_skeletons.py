@@ -1,4 +1,6 @@
 """
+Step 0:
+Combine the raw PyCharm  skeletons to a single mock skeleton-module.
 """
 
 __author__ = 'Lex Darlog (DRL)'
@@ -48,5 +50,27 @@ print(f'Output combined-skeletons file:\n{trg_fl}')
 
 
 def combine():
-	pass
+	import errno
+	import os
+	import shutil
+
+	if not _pth.exists(src_pkg):
+		raise FileNotFoundError(errno.ENOENT, 'Skeletons dir is missing', src_pkg)
+	if not _pth.isdir(src_pkg):
+		raise NotADirectoryError(
+			errno.ENOTDIR, 'Skeletons path is taken by the file', src_pkg
+		)
+	if _pth.exists(trg_dir):
+		if not _pth.isdir(trg_dir):
+			raise NotADirectoryError(
+				errno.ENOTDIR, 'Skeletons out-dir is taken by the file', trg_dir
+			)
+	else:
+		os.makedirs(trg_dir)
+	if _pth.exists(trg_fl):
+		if _pth.isdir(trg_fl):
+			shutil.rmtree(trg_fl)
+		else:
+			os.remove(trg_fl)
+	# at least, source and target paths are as expected; target file - not exist
 
