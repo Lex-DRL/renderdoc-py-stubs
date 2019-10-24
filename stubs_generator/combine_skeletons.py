@@ -39,6 +39,8 @@ _str_func = _t.Callable[[_str_h], _str_h]
 from os import path as _pth
 import re
 
+PRINT_DEBUG = True
+
 repo_dir = _pth.dirname(__file__)  # 'stubs_generator' dir
 repo_dir = _pth.abspath(_pth.join(repo_dir, '..'))
 repo_dir = repo_dir.replace('\\', '/')  # 'py-renderdoc-stubs' abs-path
@@ -60,6 +62,8 @@ def _file_lines_gen(file_path: _str_h, repl_funcs: _t.Iterable[_str_func]):
 	"""
 	if not file_path:
 		return
+	if PRINT_DEBUG:
+		print(file_path)
 	with open(file_path, 'rt', encoding='utf-8') as out_fl:
 		for ln in out_fl:
 			ln = ln.rstrip('\n\r').rstrip()
@@ -86,6 +90,8 @@ def _replacer_factory(re_comp: _t.Pattern, repl: _str_h):
 	def replacer(line: _str_h):
 		return re_sub(repl, line)
 
+	if PRINT_DEBUG:
+		print((re_comp, repl),)
 	return replacer
 
 
@@ -116,6 +122,8 @@ def replacers(submodules: _t.Iterable[_str_h]):
 		)
 		for module in submodules
 	])
+	if PRINT_DEBUG:
+		print('\nReplacements:')
 	return tuple(
 		_replacer_factory(re_comp, repl) for re_comp, repl in replacements
 	)
@@ -167,5 +175,9 @@ def combine():
 	for fl_nm, fl_pth in sorted(src_files.items()):
 		all_generators.append(_file_lines_gen(fl_pth, repl_funcs))
 
+	if PRINT_DEBUG:
+		print('\nProcessing files:')
 	with open(trg_fl, 'wt', encoding='utf-8', newline='') as out_fl:
 		out_fl.writelines(l + '\n' for l in chain(*all_generators))
+
+	print(f'\nCombined skeleton saved:\n{trg_fl}')
