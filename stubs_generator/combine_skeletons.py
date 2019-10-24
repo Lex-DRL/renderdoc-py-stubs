@@ -221,15 +221,10 @@ def combine():
 			)
 	else:
 		os.makedirs(trg_dir)
-	if _pth.exists(trg_fl):
-		trg_obj = 'File'
-		if _pth.isdir(trg_fl):
-			trg_obj = 'Folder'
-			shutil.rmtree(trg_fl)
-		else:
-			os.remove(trg_fl)
-		print(f'{trg_obj} removed: {trg_fl}')
-	# at least, source and target paths are as expected; target file - not exist
+	if _pth.isdir(trg_fl):
+		shutil.rmtree(trg_fl)
+		print(f'Folder removed: {trg_fl}')
+	# at least, source and target paths are as expected
 
 	src_files = {  # filename (no extension): file path (with ext)
 		fl_nm[:-3]: fl_pth for fl_nm, fl_pth in (
