@@ -95,11 +95,46 @@ def _replacer_factory(re_comp: _t.Pattern, repl: _str_h):
 	return replacer
 
 
+class _FirstReplaceDifferently(object):
+	"""
+	A class providing a function that performs a replacement with the given
+	regexps, but passes the string unchanged on the 1st match (between calls).
+	Any subsequent calls do perform a replacement.
+	"""
+	def __init__(
+		self, match_re: _str_h, repl: _str_h,
+		first_repl: _t.Optional[_str_h] = None
+	):
+		super(_FirstReplaceDifferently, self).__init__()
+
+		re_comp = re.compile(match_re)
+		re_search = re_comp.search
+		repl_f = _replacer_factory(re_comp, repl)
+		repl_f_first = _replacer_factory(re_comp, first_repl if first_repl else '')
+
+		def replacing_first_differently(line: _str_h):
+			if re_search(line):
+				self._replacing_f = repl_f
+				return repl_f_first(line)
+			return line
+
+		def keeping_first_intact(line: _str_h):
+			if re_search(line):
+				self._replacing_f = repl_f
+			return line
+
+		self._replacing_f = (
+			keeping_first_intact if first_repl is None
+			else replacing_first_differently
+		)
+
+	def replacer(self, line: _str_h):
+		return self._replacing_f(line)
+
+
 _global_replacements = tuple(
 	(re.compile(match_re), repl) for match_re, repl in (
 		('\\s*{}.*'.format(re.escape('# real signature unknown; restored from __doc__')), ''),
-		('\\s*from\\s+\\.?SwigPyObject\\s+import\\s+SwigPyObject\\s*', ' '),
-		('\\s*import\\s+enum\\s+as\\s+__enum\\s*', ' '),
 		('\\s*# imports\\s*', ' '),
 		# other replacements go here
 	)
@@ -124,9 +159,33 @@ def replacers(submodules: _t.Iterable[_str_h]):
 	])
 	if PRINT_DEBUG:
 		print('\nReplacements:')
-	return tuple(
+
+	# turn to the actual functions: (str) -> str
+	repl_funcs = [
 		_replacer_factory(re_comp, repl) for re_comp, repl in replacements
-	)
+	]
+	# and append two more special replacements:
+	# submodules do need enum and SwigPyObject, but only once:
+	repl_funcs.extend([
+		_FirstReplaceDifferently(
+			'(\\s*)from\\s+\\.?SwigPyObject\\s+import\\s+SwigPyObject\\s*',
+			'\\1',
+			first_repl=(
+				'\\1###########################\n'
+				'\\1# Mock SwigPyObject class\n'
+				'\\1###########################\n\n'
+				'\\1class SwigPyObject(object):\n'
+				'\\1    pass\n\n'
+				'\\1###########################\n\n'
+			)
+		).replacer,
+		_FirstReplaceDifferently(
+			'\\s*import\\s+enum\\s+as\\s+__enum\\s*',
+			' '
+		).replacer
+	])
+
+	return tuple(repl_funcs)
 
 
 def combine():
