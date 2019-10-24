@@ -1,0 +1,2 @@
+﻿# The combined file is too big:
+*.[Pp][Yy] filter=lfs diff=lfs merge=lfs -text
