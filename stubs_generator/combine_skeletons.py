@@ -64,6 +64,20 @@ def _file_lines_gen(file_path: _str_h, repl_funcs: _t.Iterable[_str_func]):
 		return
 	if PRINT_DEBUG:
 		print(file_path)
+
+	file_name = file_path.split('/')[-1]
+	if not file_name[:-3]:
+		return
+
+	if file_name.lower() != '__init__.py':
+		line_of_dashes = '#' * max(len(file_name), 40)
+		yield (
+			'\n'
+			f'##{line_of_dashes}\n'
+			f'# {file_name}\n'
+			f'##{line_of_dashes}'
+		)
+
 	with open(file_path, 'rt', encoding='utf-8') as out_fl:
 		for ln in out_fl:
 			ln = ln.rstrip('\n\r').rstrip()
