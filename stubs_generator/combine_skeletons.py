@@ -148,7 +148,9 @@ class _FirstReplaceDifferently(object):
 
 _global_replacements = tuple(
 	(re.compile(match_re), repl) for match_re, repl in (
-		('\\s*{}.*'.format(re.escape('# real signature unknown; restored from __doc__')), ''),
+		('\\s*{}.*'.format(re.escape('# real signature unknown')), ''),
+		('\\s*{}.*'.format(re.escape('# known case of __new__')), ''),
+		('\\s*{}.*'.format(re.escape('# reliably restored by inspect')), ''),
 		('\\s*# imports\\s*', ' '),
 		# other replacements go here
 	)
