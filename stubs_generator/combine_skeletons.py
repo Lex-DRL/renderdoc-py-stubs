@@ -55,7 +55,40 @@ print(f'PyCharm skeletons dir:\n{src_pkg}\n')
 print(f'Output combined-skeletons file:\n{trg_fl}\n')
 
 
-def _file_lines_gen(file_path: _str_h, repl_funcs: _t.Iterable[_str_func]):
+class _CommonData(object):
+	"""A data class, containing the detected options from the imported files."""
+	def __init__(self):
+		super(_CommonData, self).__init__()
+		self.extract_pre_comments = True
+		self.pre_comments = list()  # type: _t.List[_str_h]
+		self.imported_enum = False
+		self.imported_SwigPyObject = False
+
+
+_comments_line_match = re.compile('\\s*(#.*)').match
+_SwigPyObject_import_match = re.compile(
+	'\\s*from\\s+\\.?SwigPyObject\\s+import\\s+SwigPyObject\\s*(#.*)?'
+).match
+_SwigPyObject_import_replace = (
+	"\n"
+	"###########################\n"
+	"# Mock SwigPyObject class\n"
+	"###########################\n"
+	"\n"
+	"class SwigPyObject(object):\n"
+	"    pass\n"
+	"\n"
+	"###########################\n"
+)
+_enum_import_match = re.compile(
+	'\\s*import\\s+enum\\s+as\\s+__enum\\s*(#.*)?'
+).match
+_enum_import_replace = '\nimport enum as __enum\n'
+
+
+def _file_lines_gen(
+	file_path: _str_h, repl_funcs: _t.Iterable[_str_func], comm_data: _CommonData
+):
 	"""
 	Generator returning processed lines for a single submodule.
 	No trailing newline characters.
@@ -84,6 +117,24 @@ def _file_lines_gen(file_path: _str_h, repl_funcs: _t.Iterable[_str_func]):
 			if not ln:
 				yield ln
 
+			if comm_data.extract_pre_comments:
+				# we need to separate the very 1st block of comments - to insert
+				# any common code after it, if needed:
+				match_comment = _comments_line_match(ln)
+				if match_comment:
+					comm_data.pre_comments.append(match_comment.group(1))
+					continue
+				comm_data.extract_pre_comments = False
+
+			# detect the common external dependencies, skipping the line:
+			if _enum_import_match(ln):
+				comm_data.imported_enum = True
+				continue
+			if _SwigPyObject_import_match(ln):
+				comm_data.imported_SwigPyObject = True
+				continue
+
+			# the regular replacements:
 			for repl_f in repl_funcs:
 				ln = repl_f(ln)
 			ln = ln.rstrip()
@@ -109,43 +160,6 @@ def _replacer_factory(re_comp: _t.Pattern, repl: _str_h):
 	return replacer
 
 
-class _FirstReplaceDifferently(object):
-	"""
-	A class providing a function that performs a replacement with the given
-	regexps, but passes the string unchanged on the 1st match (between calls).
-	Any subsequent calls do perform a replacement.
-	"""
-	def __init__(
-		self, match_re: _str_h, repl: _str_h,
-		first_repl: _t.Optional[_str_h] = None
-	):
-		super(_FirstReplaceDifferently, self).__init__()
-
-		re_comp = re.compile(match_re)
-		re_search = re_comp.search
-		repl_f = _replacer_factory(re_comp, repl)
-		repl_f_first = _replacer_factory(re_comp, first_repl if first_repl else '')
-
-		def replacing_first_differently(line: _str_h):
-			if re_search(line):
-				self._replacing_f = repl_f
-				return repl_f_first(line)
-			return line
-
-		def keeping_first_intact(line: _str_h):
-			if re_search(line):
-				self._replacing_f = repl_f
-			return line
-
-		self._replacing_f = (
-			keeping_first_intact if first_repl is None
-			else replacing_first_differently
-		)
-
-	def replacer(self, line: _str_h):
-		return self._replacing_f(line)
-
-
 _global_replacements = tuple(
 	(re.compile(match_re), repl) for match_re, repl in (
 		('\\s*{}.*'.format(re.escape('# real signature unknown')), ''),
@@ -155,6 +169,7 @@ _global_replacements = tuple(
 		# other replacements go here
 	)
 )
+# formatted string, detecting a pattern of other built-in imports:
 # 'from .BlendEquation import BlendEquation'
 # 'from BlendEquation import BlendEquation'
 _import_repl = '\\s*from\\s+\\.?{0}\\s+import\\s+{0}\\s*'
@@ -180,27 +195,6 @@ def replacers(submodules: _t.Iterable[_str_h]):
 	repl_funcs = [
 		_replacer_factory(re_comp, repl) for re_comp, repl in replacements
 	]
-	# and append two more special replacements:
-	# submodules do need enum and SwigPyObject, but only once:
-	repl_funcs.extend([
-		_FirstReplaceDifferently(
-			'(\\s*)from\\s+\\.?SwigPyObject\\s+import\\s+SwigPyObject\\s*',
-			'\\1',
-			first_repl=(
-				'\\1###########################\n'
-				'\\1# Mock SwigPyObject class\n'
-				'\\1###########################\n\n'
-				'\\1class SwigPyObject(object):\n'
-				'\\1    pass\n\n'
-				'\\1###########################\n\n'
-			)
-		).replacer,
-		_FirstReplaceDifferently(
-			'\\s*import\\s+enum\\s+as\\s+__enum\\s*',
-			' '
-		).replacer
-	])
-
 	return tuple(repl_funcs)
 
 
@@ -238,16 +232,45 @@ def combine():
 	# generate substring-replacing functions:
 	repl_funcs = replacers(src_files.keys())
 
-	# each file has it's own generator with processed lines:
-	all_generators: _t.List[_t.Generator[str, _t.Any, None]] = list()
-	if init_file:
-		all_generators.append(_file_lines_gen(init_file, repl_funcs))
-	for fl_nm, fl_pth in sorted(src_files.items()):
-		all_generators.append(_file_lines_gen(fl_pth, repl_funcs))
-
 	if PRINT_DEBUG:
 		print('\nProcessing files:')
+
+	comm_data = _CommonData()
+
+	if init_file:
+		init_lines = list(_file_lines_gen(init_file, repl_funcs, comm_data))
+	else:
+		init_lines = list()
+		comm_data.extract_pre_comments = False
+
+	# clean lines, per module
+	modules_lines = {
+		fl_nm: list(_file_lines_gen(fl_pth, repl_funcs, comm_data))
+		for fl_nm, fl_pth in sorted(src_files.items())
+	}  # type: _t.Dict[_str_h, _t.List[_str_h]]
+
+	# TODO: sort modules by their dependencies
+	# TODO: re-extract the very 1st comment block after sorting, if no init_file
+
+	# each file has it's own list of processed lines:
+	all_files_text = [
+		fl_lines for fl_nm, fl_lines in sorted(modules_lines.items())
+	]  # type: _t.List[_t.List[_str_h]]
+
+	prefixes = [
+		lines for lines, do_include in(
+			(comm_data.pre_comments, comm_data.pre_comments),
+			([_enum_import_replace], comm_data.imported_enum),
+			([_SwigPyObject_import_replace], comm_data.imported_SwigPyObject),
+			(init_lines, init_lines),
+		) if do_include
+	]
+	all_files_text = prefixes + all_files_text
+
 	with open(trg_fl, 'wt', encoding='utf-8', newline='') as out_fl:
-		out_fl.writelines(l + '\n' for l in chain(*all_generators))
+		out_fl.writelines(
+			l + '\n'
+			for l in chain(*all_files_text)
+		)
 
 	print(f'\nCombined skeleton saved:\n{trg_fl}')
