@@ -61,8 +61,6 @@ class _CommonData(object):
 	"""A data class, containing the detected options from the imported files."""
 	def __init__(self):
 		super(_CommonData, self).__init__()
-		self.extract_pre_comments = True
-		self.pre_comments = list()  # type: _t.List[_str_h]
 		self.imported_enum = False
 		self.imported_SwigPyObject = False
 
@@ -86,6 +84,34 @@ _enum_import_match = re.compile(
 	'\\s*import\\s+enum\\s+as\\s+__enum\\s*(#.*)?'
 ).match
 _enum_import_replace = '\nimport enum as __enum\n'
+
+
+def _extract_1st_comment_block_gen(
+	file_lines: _t.Iterable[_str_h],
+	extracted_block: _t.List[_str_h],
+):
+	"""
+	Separate the initial comment block (containing file encoding)
+	from the rest of the file lines.
+	"""
+	assert isinstance(extracted_block, list)
+	extract_pre_comments = True
+
+	for ln in file_lines:
+		if not ln:
+			yield ln
+			continue
+
+		if extract_pre_comments:
+			match_comment = _comments_line_match(ln)
+			if match_comment:
+				ln = match_comment.group(1)
+				if ln:
+					extracted_block.append(ln)
+				continue
+			extract_pre_comments = False
+
+		yield ln
 
 
 def _file_lines_gen(
@@ -115,17 +141,7 @@ def _file_lines_gen(
 			ln = ln.rstrip('\n\r').rstrip()
 			if not ln:
 				yield ln
-
-			if comm_data.extract_pre_comments:
-				# we need to separate the very 1st block of comments - to insert
-				# any common code after it, if needed:
-				match_comment = _comments_line_match(ln)
-				if match_comment:
-					ln = _cleanup(match_comment.group(1))
-					if ln:
-						comm_data.pre_comments.append(ln)
-					continue
-				comm_data.extract_pre_comments = False
+				continue
 
 			# detect the common external dependencies, skipping the line:
 			if _enum_import_match(ln):
@@ -313,11 +329,16 @@ def combine():
 
 	comm_data = _CommonData()
 
+	# the very 1st nlock of comments is special: it needs to stay the 1st.
+	first_comment_block = list()  # type: _t.List[_str_h]
+
 	if init_file:
-		init_lines = list(_file_lines_gen(init_file, repl_funcs, comm_data))
+		init_lines = list(_extract_1st_comment_block_gen(
+			_file_lines_gen(init_file, repl_funcs, comm_data),
+			first_comment_block
+		))
 	else:
 		init_lines = list()
-		comm_data.extract_pre_comments = False
 
 	# clean lines, per module
 	module_text = {
@@ -358,17 +379,20 @@ def combine():
 		)
 	]
 
+	if modules_sorted_text and not init_file:
+		modules_sorted_text[0][1] = list(_extract_1st_comment_block_gen(
+			modules_sorted_text[0][1], first_comment_block
+		))
+
 	# each file has it's own list of processed lines:
 	all_files_text = [
 		_prepend_module_name(mdl_nm, mdl_lines)
 		for mdl_nm, mdl_lines in modules_sorted_text
 	]
 
-	# TODO: re-extract the very 1st comment block after sorting, if no init_file
-
 	prefixes = [
 		lines for lines, do_include in(
-			(comm_data.pre_comments, comm_data.pre_comments),
+			(first_comment_block, first_comment_block),
 			([_enum_import_replace], comm_data.imported_enum),
 			([_SwigPyObject_import_replace], comm_data.imported_SwigPyObject),
 			(init_lines, init_lines),
