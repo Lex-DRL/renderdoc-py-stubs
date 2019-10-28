@@ -114,12 +114,12 @@ def _extract_1st_comment_block_gen(
 		yield ln
 
 
-def _file_lines_gen(
+def _clean_file_lines_gen(
 	file_path: _str_h, repl_funcs: _t.Iterable[_str_func], comm_data: _CommonData
 ):
 	"""
 	Generator returning processed lines for a single submodule.
-	No trailing newline characters.
+	No trailing newline characters + all replacements performed.
 	"""
 	if not file_path:
 		return
@@ -391,7 +391,7 @@ def combine():
 
 	if init_file:
 		init_lines = list(_extract_1st_comment_block_gen(
-			_file_lines_gen(init_file, repl_funcs, comm_data),
+			_clean_file_lines_gen(init_file, repl_funcs, comm_data),
 			first_comment_block
 		))
 	else:
@@ -399,7 +399,7 @@ def combine():
 
 	# clean lines, per module
 	module_text: _t.Dict[_str_h, _t.List[_str_h]] = {
-		mdl_nm: list(_file_lines_gen(fl_pth, repl_funcs, comm_data))
+		mdl_nm: list(_clean_file_lines_gen(fl_pth, repl_funcs, comm_data))
 		for mdl_nm, fl_pth in sorted(src_files.items())
 	}
 
