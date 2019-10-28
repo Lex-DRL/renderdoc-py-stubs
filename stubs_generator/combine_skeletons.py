@@ -114,6 +114,65 @@ def _extract_1st_comment_block_gen(
 		yield ln
 
 
+# a valid py-object name:
+_py_name_re = '[A-Za-z_][A-Za-z_0-9]*'
+
+# 'def AnyFuncName ( whatever) -> maybe_outHint : # maybe comment '
+_match_func_start = re.compile(
+	'^def\\s+{0}\\s*\\(.*\\)\\s*'
+	'(\\s*->.*)?\\s*:(\\s*#.*)?$'.format(_py_name_re)
+).match
+_match_func_end = re.compile('^[^\s]+').match
+
+
+def _extract_global_funcs_gen(
+	file_lines: _t.Iterable[_str_h],
+	extracted_funcs: _t.List[_t.List[_str_h]],
+):
+	"""
+	Extract each global function to it's own separate block of code.
+	The function definition is detected vary basically: only for functions
+	declaring their name and all the arguments on the same line.
+
+	The end of function is also detected only in simplest case: when a line
+	starts from any non-whitespace character. Technically, such line could be
+	inside a function (within a multiline string), but we don't catch that edge case.
+
+	Thankfully, PyCharm outputs to skeletons exactly this simplistic formatting.
+	"""
+	assert isinstance(extracted_funcs, list)
+	assert not extracted_funcs or (
+		isinstance(extracted_funcs[0], list) and
+		isinstance(extracted_funcs[-1], list)
+	)
+
+	in_func = False
+	cur_func_lines: _t.List[_str_h] = list()
+
+	for ln in file_lines:
+		ln = ln.rstrip()
+		if in_func:
+			if not(ln and _match_func_end(ln)):
+				# empty line or still inside a function - add the line and continue
+				cur_func_lines.append(ln)
+				continue
+
+			# the func is ended, but we still need to process the line
+			in_func = False
+
+		def_match = _match_func_start(ln)
+		if not def_match:
+			# we wasn't in a function and the current line doesn't start a new one -
+			# so it's just a regular line
+			yield ln
+			continue
+
+		# we've found a new function start
+		in_func = True
+		cur_func_lines = list([ln])
+		extracted_funcs.append(cur_func_lines)
+
+
 def _clean_file_lines_gen(
 	file_path: _str_h, repl_funcs: _t.Iterable[_str_func], comm_data: _CommonData
 ):
@@ -158,8 +217,6 @@ def _clean_file_lines_gen(
 			yield ln
 
 
-# a valid py-object name:
-_py_name_re = '[A-Za-z_][A-Za-z_0-9]*'
 # a regex detecting class definition (if on single line):
 _class_def_match = re.compile(
 	'\\s*'.join([
