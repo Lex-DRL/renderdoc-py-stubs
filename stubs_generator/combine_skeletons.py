@@ -33,11 +33,13 @@ except:
 		_str_h = str
 
 _str_func = _t.Callable[[_str_h], _str_h]
+_h_module_dependencies = _t.Dict[_str_h, _t.Set[_str_h]]
 
 # endregion
 
-from os import path as _pth
 import re
+from os import path as _pth
+from itertools import chain as _chain
 
 PRINT_DEBUG = True
 
@@ -55,7 +57,66 @@ print(f'PyCharm skeletons dir:\n{src_pkg}\n')
 print(f'Output combined-skeletons file:\n{trg_fl}\n')
 
 
-def _file_lines_gen(file_path: _str_h, repl_funcs: _t.Iterable[_str_func]):
+class _CommonData(object):
+	"""A data class, containing the detected options from the imported files."""
+	def __init__(self):
+		super(_CommonData, self).__init__()
+		self.imported_enum = False
+		self.imported_SwigPyObject = False
+
+
+_comments_line_match = re.compile('\\s*(#.*)').match
+_SwigPyObject_import_match = re.compile(
+	'\\s*from\\s+\\.?SwigPyObject\\s+import\\s+SwigPyObject\\s*(#.*)?'
+).match
+_SwigPyObject_import_replace = (
+	"\n"
+	"###########################\n"
+	"# Mock SwigPyObject class\n"
+	"###########################\n"
+	"\n"
+	"class SwigPyObject(object):\n"
+	"    pass\n"
+	"\n"
+	"###########################\n"
+)
+_enum_import_match = re.compile(
+	'\\s*import\\s+enum\\s+as\\s+__enum\\s*(#.*)?'
+).match
+_enum_import_replace = '\nimport enum as __enum\n'
+
+
+def _extract_1st_comment_block_gen(
+	file_lines: _t.Iterable[_str_h],
+	extracted_block: _t.List[_str_h],
+):
+	"""
+	Separate the initial comment block (containing file encoding)
+	from the rest of the file lines.
+	"""
+	assert isinstance(extracted_block, list)
+	extract_pre_comments = True
+
+	for ln in file_lines:
+		if not ln:
+			yield ln
+			continue
+
+		if extract_pre_comments:
+			match_comment = _comments_line_match(ln)
+			if match_comment:
+				ln = match_comment.group(1)
+				if ln:
+					extracted_block.append(ln)
+				continue
+			extract_pre_comments = False
+
+		yield ln
+
+
+def _file_lines_gen(
+	file_path: _str_h, repl_funcs: _t.Iterable[_str_func], comm_data: _CommonData
+):
 	"""
 	Generator returning processed lines for a single submodule.
 	No trailing newline characters.
@@ -69,28 +130,69 @@ def _file_lines_gen(file_path: _str_h, repl_funcs: _t.Iterable[_str_func]):
 	if not file_name[:-3]:
 		return
 
-	if file_name.lower() != '__init__.py':
-		line_of_dashes = '#' * max(len(file_name), 40)
-		yield (
-			'\n'
-			f'##{line_of_dashes}\n'
-			f'# {file_name}\n'
-			f'##{line_of_dashes}'
-		)
+	def _cleanup(line: _str_h):
+		"""The regular replacements"""
+		for repl_f in repl_funcs:
+			line = repl_f(line)
+		return line.rstrip()
 
 	with open(file_path, 'rt', encoding='utf-8') as out_fl:
 		for ln in out_fl:
 			ln = ln.rstrip('\n\r').rstrip()
 			if not ln:
 				yield ln
+				continue
 
-			for repl_f in repl_funcs:
-				ln = repl_f(ln)
-			ln = ln.rstrip()
+			# detect the common external dependencies, skipping the line:
+			if _enum_import_match(ln):
+				comm_data.imported_enum = True
+				continue
+			if _SwigPyObject_import_match(ln):
+				comm_data.imported_SwigPyObject = True
+				continue
+
+			ln = _cleanup(ln)
 			if not ln:
 				# the line is cleaned-up to nothing, skip it
 				continue
 			yield ln
+
+
+# a valid py-object name:
+_py_name_re = '[A-Za-z_][A-Za-z_0-9]*'
+# a regex detecting class definition (if on single line):
+_class_def_match = re.compile(
+	'\\s*'.join([
+		'',
+		'class\\s+{0}',
+		'\\(',
+		'({0})',
+		'\\)',
+		':'
+	]).format(_py_name_re)
+).match
+
+
+def _base_classes(module_lines: _t.List[_str_h], all_modules: _t.Set[_str_h]):
+	"""
+	Detect all the base-class names that the classes defined in the
+	given file lines inherit from.
+
+	Detects with a regexp, only if `class DefinedClassName(InheritedName):`
+	is on a single line, no matter what's the indent.
+	"""
+	res = list()  # type: _t.List[_str_h]
+	for line in module_lines:
+		line = line.rstrip()
+		if not line:
+			continue
+		match = _class_def_match(line)
+		if not match:
+			continue
+		base_class_name = match.group(1)
+		if base_class_name in all_modules:
+			res.append(base_class_name)
+	return res
 
 
 def _replacer_factory(re_comp: _t.Pattern, repl: _str_h):
@@ -109,52 +211,17 @@ def _replacer_factory(re_comp: _t.Pattern, repl: _str_h):
 	return replacer
 
 
-class _FirstReplaceDifferently(object):
-	"""
-	A class providing a function that performs a replacement with the given
-	regexps, but passes the string unchanged on the 1st match (between calls).
-	Any subsequent calls do perform a replacement.
-	"""
-	def __init__(
-		self, match_re: _str_h, repl: _str_h,
-		first_repl: _t.Optional[_str_h] = None
-	):
-		super(_FirstReplaceDifferently, self).__init__()
-
-		re_comp = re.compile(match_re)
-		re_search = re_comp.search
-		repl_f = _replacer_factory(re_comp, repl)
-		repl_f_first = _replacer_factory(re_comp, first_repl if first_repl else '')
-
-		def replacing_first_differently(line: _str_h):
-			if re_search(line):
-				self._replacing_f = repl_f
-				return repl_f_first(line)
-			return line
-
-		def keeping_first_intact(line: _str_h):
-			if re_search(line):
-				self._replacing_f = repl_f
-			return line
-
-		self._replacing_f = (
-			keeping_first_intact if first_repl is None
-			else replacing_first_differently
-		)
-
-	def replacer(self, line: _str_h):
-		return self._replacing_f(line)
-
-
 _global_replacements = tuple(
 	(re.compile(match_re), repl) for match_re, repl in (
 		('\\s*{}.*'.format(re.escape('# real signature unknown')), ''),
 		('\\s*{}.*'.format(re.escape('# known case of __new__')), ''),
 		('\\s*{}.*'.format(re.escape('# reliably restored by inspect')), ''),
 		('\\s*# imports\\s*', ' '),
+		('^\\s*#\\s*from\\s+.*[\\\/]renderdoc\\.pyd$', ''),
 		# other replacements go here
 	)
 )
+# formatted string, detecting a pattern of other built-in imports:
 # 'from .BlendEquation import BlendEquation'
 # 'from BlendEquation import BlendEquation'
 _import_repl = '\\s*from\\s+\\.?{0}\\s+import\\s+{0}\\s*'
@@ -180,35 +247,53 @@ def replacers(submodules: _t.Iterable[_str_h]):
 	repl_funcs = [
 		_replacer_factory(re_comp, repl) for re_comp, repl in replacements
 	]
-	# and append two more special replacements:
-	# submodules do need enum and SwigPyObject, but only once:
-	repl_funcs.extend([
-		_FirstReplaceDifferently(
-			'(\\s*)from\\s+\\.?SwigPyObject\\s+import\\s+SwigPyObject\\s*',
-			'\\1',
-			first_repl=(
-				'\\1###########################\n'
-				'\\1# Mock SwigPyObject class\n'
-				'\\1###########################\n\n'
-				'\\1class SwigPyObject(object):\n'
-				'\\1    pass\n\n'
-				'\\1###########################\n\n'
-			)
-		).replacer,
-		_FirstReplaceDifferently(
-			'\\s*import\\s+enum\\s+as\\s+__enum\\s*',
-			' '
-		).replacer
-	])
-
 	return tuple(repl_funcs)
+
+
+def _detect_dependencies_recursively(
+	depending_on: _h_module_dependencies,
+	base_for: _t.Dict[_str_h, _t.Set[_str_h]],
+	module_name: _str_h,
+	base_classes: _t.Set[_str_h],
+	classes_stack: _t.Optional[_t.List[_str_h]] = None
+):
+	if not(classes_stack and isinstance(classes_stack, list)):
+		classes_stack = [module_name, ]
+	if module_name in classes_stack[1:]:
+		raise RecursionError(f'Circular dependency detected: {classes_stack}')
+	for base_class in base_classes:
+		base_for[base_class].add(module_name)
+		bases_of_base = depending_on[base_class]
+		if bases_of_base:
+			_detect_dependencies_recursively(
+				depending_on, base_for, module_name, bases_of_base,
+				classes_stack + [base_class, ]
+			)
+
+
+def _prepend_module_name(
+	module_name: _str_h,
+	file_lines: _t.List[_str_h],
+):
+	"""
+	Attach a comment containing the source skeleton name to the beginning
+	of the file lines
+	"""
+	file_name = f'Skeleton: {module_name}.py'
+	line_of_hashes = '#' * max(len(file_name), 40)
+	prepend = [
+		'',
+		f'##{line_of_hashes}',
+		f'# {file_name}',
+		f'##{line_of_hashes}',
+	]
+	return prepend + file_lines
 
 
 def combine():
 	import errno
 	import os
 	import shutil
-	from itertools import chain
 
 	if not _pth.exists(src_pkg):
 		raise FileNotFoundError(errno.ENOENT, 'Skeletons dir is missing', src_pkg)
@@ -236,18 +321,89 @@ def combine():
 	init_file = src_files.pop('__init__', None)
 
 	# generate substring-replacing functions:
-	repl_funcs = replacers(src_files.keys())
-
-	# each file has it's own generator with processed lines:
-	all_generators: _t.List[_t.Generator[str, _t.Any, None]] = list()
-	if init_file:
-		all_generators.append(_file_lines_gen(init_file, repl_funcs))
-	for fl_nm, fl_pth in sorted(src_files.items()):
-		all_generators.append(_file_lines_gen(fl_pth, repl_funcs))
+	all_module_names = set(src_files.keys())
+	repl_funcs = replacers(sorted(all_module_names))
 
 	if PRINT_DEBUG:
 		print('\nProcessing files:')
+
+	comm_data = _CommonData()
+
+	# the very 1st nlock of comments is special: it needs to stay the 1st.
+	first_comment_block = list()  # type: _t.List[_str_h]
+
+	if init_file:
+		init_lines = list(_extract_1st_comment_block_gen(
+			_file_lines_gen(init_file, repl_funcs, comm_data),
+			first_comment_block
+		))
+	else:
+		init_lines = list()
+
+	# clean lines, per module
+	module_text = {
+		mdl_nm: list(_file_lines_gen(fl_pth, repl_funcs, comm_data))
+		for mdl_nm, fl_pth in sorted(src_files.items())
+	}
+
+	print('\nDetecting dependencies order...')
+
+	# dependent module -> it's bases
+	module_use: _h_module_dependencies = {
+		mdl_nm: set(_base_classes(lines, all_module_names))
+		for mdl_nm, lines in module_text.items()
+	}
+	# the opposite: base module -> modules depending on it
+	module_used_by: _h_module_dependencies = {
+		mdl_nm: set() for mdl_nm in all_module_names
+	}
+	# populate the downstream dependencies (to `module_base_for`):
+	for mdl_nm, base_classes in module_use.items():
+		_detect_dependencies_recursively(
+			module_use, module_used_by, mdl_nm, base_classes
+		)
+	# use downstream dependencies to detect
+	# which classes the module code is used for:
+	module_sort_keys: _t.Dict[_str_h, _t.List[_str_h]] = {
+		mdl_nm: sorted(
+			list(used_by - {mdl_nm, }) + [mdl_nm + ':current', ]
+		) for mdl_nm, used_by in module_used_by.items()
+	}
+	modules_sorted_text: _t.List[_str_h, _t.List[_str_h]] = [
+		(m_nm, m_lines) for m_nm, m_lines, m_k in sorted(
+			(
+				(mod_nm, module_text[mod_nm], mod_sort_key)
+				for mod_nm, mod_sort_key in module_sort_keys.items()
+			),
+			key=lambda tpl: tpl[-1]
+		)
+	]
+
+	if modules_sorted_text and not init_file:
+		modules_sorted_text[0][1] = list(_extract_1st_comment_block_gen(
+			modules_sorted_text[0][1], first_comment_block
+		))
+
+	# each file has it's own list of processed lines:
+	all_files_text = [
+		_prepend_module_name(mdl_nm, mdl_lines)
+		for mdl_nm, mdl_lines in modules_sorted_text
+	]
+
+	prefixes = [
+		lines for lines, do_include in(
+			(first_comment_block, first_comment_block),
+			([_enum_import_replace], comm_data.imported_enum),
+			([_SwigPyObject_import_replace], comm_data.imported_SwigPyObject),
+			(init_lines, init_lines),
+		) if do_include
+	]
+	all_files_text = prefixes + all_files_text
+
 	with open(trg_fl, 'wt', encoding='utf-8', newline='') as out_fl:
-		out_fl.writelines(l + '\n' for l in chain(*all_generators))
+		out_fl.writelines(
+			l + '\n'
+			for l in _chain(*all_files_text)
+		)
 
 	print(f'\nCombined skeleton saved:\n{trg_fl}')
