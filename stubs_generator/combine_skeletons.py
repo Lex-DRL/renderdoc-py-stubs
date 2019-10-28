@@ -290,7 +290,8 @@ def _prepend_module_name(
 	return prepend + file_lines
 
 
-def combine():
+def _check_fs():
+	"""Make sure the in/out file structure is as expected. Raise an error if not."""
 	import errno
 	import os
 	import shutil
@@ -311,13 +312,69 @@ def combine():
 	if _pth.isdir(trg_fl):
 		shutil.rmtree(trg_fl)
 		print(f'Folder removed: {trg_fl}')
-	# at least, source and target paths are as expected
 
-	src_files = {  # filename (no extension): file path (with ext)
+
+def source_module_files() -> _t.Dict[_str_h, _str_h]:
+	"""
+	The dictionary with source module names as key and a full filepath as a value.
+	"""
+	import os
+	# first, make sure the source and target paths are as expected:
+	_check_fs()
+	return {  # filename (no extension): file path (with ext)
 		fl_nm[:-3]: fl_pth for fl_nm, fl_pth in (
 			(f, f'{src_pkg}/{f}') for f in os.listdir(src_pkg)
 		) if _pth.isfile(fl_pth) and fl_nm.lower().endswith('.py')
-	}  # type: _t.Dict[_str_h, _str_h]
+	}
+
+
+def _sorted_modules(
+	module_text: _t.Dict[_str_h, _t.List[_str_h]]
+):
+	"""
+	From already cleanup'ed per-module lines, generate a list of modules
+	sorted by their dependency.
+	Each element in the result is a tuple of (ModuleName, LinesList)
+	"""
+	print('\nDetecting dependencies order...')
+
+	all_module_names_set = set(module_text.keys())
+
+	# dependent module -> it's bases
+	module_use: _h_module_dependencies = {
+		mdl_nm: set(_base_classes(lines, all_module_names_set))
+		for mdl_nm, lines in module_text.items()
+	}
+	# the opposite: base module -> modules depending on it
+	module_used_by: _h_module_dependencies = {
+		mdl_nm: set() for mdl_nm in all_module_names_set
+	}
+	# populate the downstream dependencies (to `module_base_for`):
+	for mdl_nm, base_classes in module_use.items():
+		_detect_dependencies_recursively(
+			module_use, module_used_by, mdl_nm, base_classes
+		)
+	# use downstream dependencies to detect
+	# which classes the module code is used for:
+	module_sort_keys: _t.Dict[_str_h, _t.List[_str_h]] = {
+		mdl_nm: sorted(
+			list(used_by - {mdl_nm, }) + [mdl_nm + ':current', ]
+		) for mdl_nm, used_by in module_used_by.items()
+	}
+	modules_sorted_text: _t.List[_t.Tuple[_str_h, _t.List[_str_h]]] = [
+		(m_nm, m_lines) for m_nm, m_lines, m_k in sorted(
+			(
+				(mod_nm, module_text[mod_nm], mod_sort_key)
+				for mod_nm, mod_sort_key in module_sort_keys.items()
+			),
+			key=lambda tpl: tpl[-1]
+		)
+	]
+	return modules_sorted_text
+
+
+def combine():
+	src_files = source_module_files()  # FS is error-checked inside the func
 	init_file = src_files.pop('__init__', None)
 
 	# generate substring-replacing functions:
@@ -341,43 +398,12 @@ def combine():
 		init_lines = list()
 
 	# clean lines, per module
-	module_text = {
+	module_text: _t.Dict[_str_h, _t.List[_str_h]] = {
 		mdl_nm: list(_file_lines_gen(fl_pth, repl_funcs, comm_data))
 		for mdl_nm, fl_pth in sorted(src_files.items())
 	}
 
-	print('\nDetecting dependencies order...')
-
-	# dependent module -> it's bases
-	module_use: _h_module_dependencies = {
-		mdl_nm: set(_base_classes(lines, all_module_names))
-		for mdl_nm, lines in module_text.items()
-	}
-	# the opposite: base module -> modules depending on it
-	module_used_by: _h_module_dependencies = {
-		mdl_nm: set() for mdl_nm in all_module_names
-	}
-	# populate the downstream dependencies (to `module_base_for`):
-	for mdl_nm, base_classes in module_use.items():
-		_detect_dependencies_recursively(
-			module_use, module_used_by, mdl_nm, base_classes
-		)
-	# use downstream dependencies to detect
-	# which classes the module code is used for:
-	module_sort_keys: _t.Dict[_str_h, _t.List[_str_h]] = {
-		mdl_nm: sorted(
-			list(used_by - {mdl_nm, }) + [mdl_nm + ':current', ]
-		) for mdl_nm, used_by in module_used_by.items()
-	}
-	modules_sorted_text: _t.List[_str_h, _t.List[_str_h]] = [
-		(m_nm, m_lines) for m_nm, m_lines, m_k in sorted(
-			(
-				(mod_nm, module_text[mod_nm], mod_sort_key)
-				for mod_nm, mod_sort_key in module_sort_keys.items()
-			),
-			key=lambda tpl: tpl[-1]
-		)
-	]
+	modules_sorted_text = _sorted_modules(module_text)
 
 	if modules_sorted_text and not init_file:
 		modules_sorted_text[0][1] = list(_extract_1st_comment_block_gen(
