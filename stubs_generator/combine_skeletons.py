@@ -84,6 +84,14 @@ _enum_import_match = re.compile(
 	'\\s*import\\s+enum\\s+as\\s+__enum\\s*(#.*)?'
 ).match
 _enum_import_replace = '\nimport enum as __enum\n'
+_all_funcs_prefix = [
+	"\n",
+	"\n",
+	"###########################\n",
+	"# All extracted functions\n",
+	"###########################\n",
+	"\n"
+]
 
 
 def _extract_1st_comment_block_gen(
@@ -148,6 +156,7 @@ def _extract_global_funcs_gen(
 
 	in_func = False
 	cur_func_lines: _t.List[_str_h] = list()
+	funcs_num_found = 0
 
 	for ln in file_lines:
 		ln = ln.rstrip()
@@ -169,8 +178,11 @@ def _extract_global_funcs_gen(
 
 		# we've found a new function start
 		in_func = True
+		funcs_num_found += 1
 		cur_func_lines = list([ln])
 		extracted_funcs.append(cur_func_lines)
+
+	print(f"Functions extracted ({funcs_num_found})")
 
 
 def _clean_file_lines_gen(
@@ -427,6 +439,8 @@ def _sorted_modules(
 			key=lambda tpl: tpl[-1]
 		)
 	]
+
+	print('Dependencies found, modules re ordered according to them.')
 	return modules_sorted_text
 
 
@@ -445,12 +459,13 @@ def combine():
 
 	# the very 1st nlock of comments is special: it needs to stay the 1st.
 	first_comment_block = list()  # type: _t.List[_str_h]
+	func_definitions = list()  # type: _t.List[_t.List[_str_h]]
 
 	if init_file:
-		init_lines = list(_extract_1st_comment_block_gen(
-			_clean_file_lines_gen(init_file, repl_funcs, comm_data),
-			first_comment_block
-		))
+		init_lines_gen = _clean_file_lines_gen(init_file, repl_funcs, comm_data)
+		init_lines_gen = _extract_1st_comment_block_gen(init_lines_gen, first_comment_block)
+		init_lines_gen = _extract_global_funcs_gen(init_lines_gen, func_definitions)
+		init_lines = list(init_lines_gen)
 	else:
 		init_lines = list()
 
@@ -461,6 +476,13 @@ def combine():
 	}
 
 	modules_sorted_text = _sorted_modules(module_text)
+
+	print('\nExtracting functions:')
+	for mdl_nm, mdl_lines in modules_sorted_text:
+		print(mdl_nm)
+		mdl_lines[:] = _extract_global_funcs_gen(mdl_lines, func_definitions)
+	if func_definitions:
+		func_definitions = [_all_funcs_prefix, ] + func_definitions
 
 	if modules_sorted_text and not init_file:
 		modules_sorted_text[0][1] = list(_extract_1st_comment_block_gen(
@@ -473,7 +495,7 @@ def combine():
 		for mdl_nm, mdl_lines in modules_sorted_text
 	]
 
-	prefixes = [
+	prefixes: _t.List[_t.List[_str_h]] = [
 		lines for lines, do_include in(
 			(first_comment_block, first_comment_block),
 			([_enum_import_replace], comm_data.imported_enum),
@@ -481,7 +503,7 @@ def combine():
 			(init_lines, init_lines),
 		) if do_include
 	]
-	all_files_text = prefixes + all_files_text
+	all_files_text = prefixes + all_files_text + func_definitions
 
 	with open(trg_fl, 'wt', encoding='utf-8', newline='') as out_fl:
 		out_fl.writelines(
