@@ -33,11 +33,13 @@ except:
 		_str_h = str
 
 _str_func = _t.Callable[[_str_h], _str_h]
+_h_module_dependencies = _t.Dict[_str_h, _t.Set[_str_h]]
 
 # endregion
 
-from os import path as _pth
 import re
+from os import path as _pth
+from itertools import chain as _chain
 
 PRINT_DEBUG = True
 
@@ -102,15 +104,6 @@ def _file_lines_gen(
 	if not file_name[:-3]:
 		return
 
-	if file_name.lower() != '__init__.py':
-		line_of_dashes = '#' * max(len(file_name), 40)
-		yield (
-			'\n'
-			f'##{line_of_dashes}\n'
-			f'# {file_name}\n'
-			f'##{line_of_dashes}'
-		)
-
 	with open(file_path, 'rt', encoding='utf-8') as out_fl:
 		for ln in out_fl:
 			ln = ln.rstrip('\n\r').rstrip()
@@ -144,6 +137,43 @@ def _file_lines_gen(
 			yield ln
 
 
+# a valid py-object name:
+_py_name_re = '[A-Za-z_][A-Za-z_0-9]*'
+# a regex detecting class definition (if on single line):
+_class_def_match = re.compile(
+	'\\s*'.join([
+		'',
+		'class\\s+{0}',
+		'\\(',
+		'({0})',
+		'\\)',
+		':'
+	]).format(_py_name_re)
+).match
+
+
+def _base_classes(module_lines: _t.List[_str_h], all_modules: _t.Set[_str_h]):
+	"""
+	Detect all the base-class names that the classes defined in the
+	given file lines inherit from.
+
+	Detects with a regexp, only if `class DefinedClassName(InheritedName):`
+	is on a single line, no matter what's the indent.
+	"""
+	res = list()  # type: _t.List[_str_h]
+	for line in module_lines:
+		line = line.rstrip()
+		if not line:
+			continue
+		match = _class_def_match(line)
+		if not match:
+			continue
+		base_class_name = match.group(1)
+		if base_class_name in all_modules:
+			res.append(base_class_name)
+	return res
+
+
 def _replacer_factory(re_comp: _t.Pattern, repl: _str_h):
 	"""
 	Generate a line-processing function from a single pair of:
@@ -166,6 +196,7 @@ _global_replacements = tuple(
 		('\\s*{}.*'.format(re.escape('# known case of __new__')), ''),
 		('\\s*{}.*'.format(re.escape('# reliably restored by inspect')), ''),
 		('\\s*# imports\\s*', ' '),
+		('^\\s*#\\s*from\\s+.*[\\\/]renderdoc\\.pyd$', ''),
 		# other replacements go here
 	)
 )
@@ -198,11 +229,50 @@ def replacers(submodules: _t.Iterable[_str_h]):
 	return tuple(repl_funcs)
 
 
+def _detect_dependencies_recursively(
+	depending_on: _h_module_dependencies,
+	base_for: _t.Dict[_str_h, _t.Set[_str_h]],
+	module_name: _str_h,
+	base_classes: _t.Set[_str_h],
+	classes_stack: _t.Optional[_t.List[_str_h]] = None
+):
+	if not(classes_stack and isinstance(classes_stack, list)):
+		classes_stack = [module_name, ]
+	if module_name in classes_stack[1:]:
+		raise RecursionError(f'Circular dependency detected: {classes_stack}')
+	for base_class in base_classes:
+		base_for[base_class].add(module_name)
+		bases_of_base = depending_on[base_class]
+		if bases_of_base:
+			_detect_dependencies_recursively(
+				depending_on, base_for, module_name, bases_of_base,
+				classes_stack + [base_class, ]
+			)
+
+
+def _prepend_module_name(
+	module_name: _str_h,
+	file_lines: _t.List[_str_h],
+):
+	"""
+	Attach a comment containing the source skeleton name to the beginning
+	of the file lines
+	"""
+	file_name = f'Skeleton: {module_name}.py'
+	line_of_hashes = '#' * max(len(file_name), 40)
+	prepend = [
+		'',
+		f'##{line_of_hashes}',
+		f'# {file_name}',
+		f'##{line_of_hashes}',
+	]
+	return prepend + file_lines
+
+
 def combine():
 	import errno
 	import os
 	import shutil
-	from itertools import chain
 
 	if not _pth.exists(src_pkg):
 		raise FileNotFoundError(errno.ENOENT, 'Skeletons dir is missing', src_pkg)
@@ -230,7 +300,8 @@ def combine():
 	init_file = src_files.pop('__init__', None)
 
 	# generate substring-replacing functions:
-	repl_funcs = replacers(src_files.keys())
+	all_module_names = set(src_files.keys())
+	repl_funcs = replacers(sorted(all_module_names))
 
 	if PRINT_DEBUG:
 		print('\nProcessing files:')
@@ -244,18 +315,51 @@ def combine():
 		comm_data.extract_pre_comments = False
 
 	# clean lines, per module
-	modules_lines = {
-		fl_nm: list(_file_lines_gen(fl_pth, repl_funcs, comm_data))
-		for fl_nm, fl_pth in sorted(src_files.items())
-	}  # type: _t.Dict[_str_h, _t.List[_str_h]]
+	module_text = {
+		mdl_nm: list(_file_lines_gen(fl_pth, repl_funcs, comm_data))
+		for mdl_nm, fl_pth in sorted(src_files.items())
+	}
 
-	# TODO: sort modules by their dependencies
-	# TODO: re-extract the very 1st comment block after sorting, if no init_file
+	print('\nDetecting dependencies order...')
+
+	# dependent module -> it's bases
+	module_use: _h_module_dependencies = {
+		mdl_nm: set(_base_classes(lines, all_module_names))
+		for mdl_nm, lines in module_text.items()
+	}
+	# the opposite: base module -> modules depending on it
+	module_used_by: _h_module_dependencies = {
+		mdl_nm: set() for mdl_nm in all_module_names
+	}
+	# populate the downstream dependencies (to `module_base_for`):
+	for mdl_nm, base_classes in module_use.items():
+		_detect_dependencies_recursively(
+			module_use, module_used_by, mdl_nm, base_classes
+		)
+	# use downstream dependencies to detect
+	# which classes the module code is used for:
+	module_sort_keys: _t.Dict[_str_h, _t.List[_str_h]] = {
+		mdl_nm: sorted(
+			list(used_by - {mdl_nm, }) + [mdl_nm + ':current', ]
+		) for mdl_nm, used_by in module_used_by.items()
+	}
+	modules_sorted_text: _t.List[_str_h, _t.List[_str_h]] = [
+		(m_nm, m_lines) for m_nm, m_lines, m_k in sorted(
+			(
+				(mod_nm, module_text[mod_nm], mod_sort_key)
+				for mod_nm, mod_sort_key in module_sort_keys.items()
+			),
+			key=lambda tpl: tpl[-1]
+		)
+	]
 
 	# each file has it's own list of processed lines:
 	all_files_text = [
-		fl_lines for fl_nm, fl_lines in sorted(modules_lines.items())
-	]  # type: _t.List[_t.List[_str_h]]
+		_prepend_module_name(mdl_nm, mdl_lines)
+		for mdl_nm, mdl_lines in modules_sorted_text
+	]
+
+	# TODO: re-extract the very 1st comment block after sorting, if no init_file
 
 	prefixes = [
 		lines for lines, do_include in(
@@ -270,7 +374,7 @@ def combine():
 	with open(trg_fl, 'wt', encoding='utf-8', newline='') as out_fl:
 		out_fl.writelines(
 			l + '\n'
-			for l in chain(*all_files_text)
+			for l in _chain(*all_files_text)
 		)
 
 	print(f'\nCombined skeleton saved:\n{trg_fl}')
