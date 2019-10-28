@@ -104,6 +104,12 @@ def _file_lines_gen(
 	if not file_name[:-3]:
 		return
 
+	def _cleanup(line: _str_h):
+		"""The regular replacements"""
+		for repl_f in repl_funcs:
+			line = repl_f(line)
+		return line.rstrip()
+
 	with open(file_path, 'rt', encoding='utf-8') as out_fl:
 		for ln in out_fl:
 			ln = ln.rstrip('\n\r').rstrip()
@@ -115,7 +121,9 @@ def _file_lines_gen(
 				# any common code after it, if needed:
 				match_comment = _comments_line_match(ln)
 				if match_comment:
-					comm_data.pre_comments.append(match_comment.group(1))
+					ln = _cleanup(match_comment.group(1))
+					if ln:
+						comm_data.pre_comments.append(ln)
 					continue
 				comm_data.extract_pre_comments = False
 
@@ -127,10 +135,7 @@ def _file_lines_gen(
 				comm_data.imported_SwigPyObject = True
 				continue
 
-			# the regular replacements:
-			for repl_f in repl_funcs:
-				ln = repl_f(ln)
-			ln = ln.rstrip()
+			ln = _cleanup(ln)
 			if not ln:
 				# the line is cleaned-up to nothing, skip it
 				continue
