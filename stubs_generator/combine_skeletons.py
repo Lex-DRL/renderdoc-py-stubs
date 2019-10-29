@@ -69,29 +69,38 @@ _comments_line_match = re.compile('\\s*(#.*)').match
 _SwigPyObject_import_match = re.compile(
 	'\\s*from\\s+\\.?SwigPyObject\\s+import\\s+SwigPyObject\\s*(#.*)?'
 ).match
-_SwigPyObject_import_replace = (
-	"\n"
-	"###########################\n"
-	"# Mock SwigPyObject class\n"
-	"###########################\n"
-	"\n"
-	"class SwigPyObject(object):\n"
-	"    pass\n"
-	"\n"
-	"###########################\n"
-)
 _enum_import_match = re.compile(
 	'\\s*import\\s+enum\\s+as\\s+__enum\\s*(#.*)?'
 ).match
-_enum_import_replace = '\nimport enum as __enum\n'
-_all_funcs_prefix = [
-	"\n",
-	"\n",
-	"###########################\n",
-	"# All extracted functions\n",
-	"###########################\n",
-	"\n"
+_SwigPyObject_import_lines = [
+	"###########################",
+	"# Mock SwigPyObject class",
+	"###########################",
+	"",
+	"class SwigPyObject(object):",
+	"    pass",
+	"",
+	"###########################",
 ]
+_enum_import_lines = ['import enum as __enum', ]
+_all_funcs_prefix = [
+	"###########################",
+	"# All extracted functions",
+	"###########################",
+	""
+]
+
+
+def _join_non_empty_iterables_with(separator, *iterables):
+	"""A service function designed to insert new lines between code blocks."""
+	first_added = False
+	for item in iterables:
+		if not item:
+			continue
+		if first_added:
+			yield separator
+		yield item
+		first_added = True
 
 
 def _extract_1st_comment_block_gen(
@@ -183,6 +192,31 @@ def _extract_global_funcs_gen(
 		extracted_funcs.append(cur_func_lines)
 
 	print(f"Functions extracted ({funcs_num_found})")
+
+
+def _strip_empty_lines(lines: _t.List[_str_h]) -> _t.List[_str_h]:
+	"""
+	Remove any empty lines from the start and end of a code block.
+	"""
+	if not lines:
+		return list()
+
+	# strip empty lines from start
+	stripped = 0
+	for ln in lines:
+		if ln.rstrip():
+			break
+		stripped += 1
+	if stripped > 0:
+		lines = lines[stripped:]
+
+	# ... and from end:
+	stripped = 0
+	for ln in reversed(lines):
+		if ln.rstrip():
+			break
+		stripped += 1
+	return lines if stripped < 1 else lines[:-stripped]
 
 
 def _clean_file_lines_gen(
@@ -351,7 +385,6 @@ def _prepend_module_name(
 	file_name = f'Skeleton: {module_name}.py'
 	line_of_hashes = '#' * max(len(file_name), 40)
 	prepend = [
-		'',
 		f'##{line_of_hashes}',
 		f'# {file_name}',
 		f'##{line_of_hashes}',
@@ -481,34 +514,60 @@ def combine():
 	for mdl_nm, mdl_lines in modules_sorted_text:
 		print(mdl_nm)
 		mdl_lines[:] = _extract_global_funcs_gen(mdl_lines, func_definitions)
-	if func_definitions:
-		func_definitions = [_all_funcs_prefix, ] + func_definitions
 
 	if modules_sorted_text and not init_file:
 		modules_sorted_text[0][1] = list(_extract_1st_comment_block_gen(
 			modules_sorted_text[0][1], first_comment_block
 		))
 
+	# for all the code blocks - remove starting and trailing empty lines
+	for lines_block in _chain(
+		(
+			first_comment_block,
+			init_lines
+		),
+		func_definitions,
+		(mdl_lines for mdl_nm, mdl_lines in modules_sorted_text)
+	):
+		lines_block[:] = _strip_empty_lines(lines_block)
+
+	func_definitions = [
+		func_lines for func_lines in func_definitions if func_lines
+	]
+	if func_definitions:
+		func_definitions = [_all_funcs_prefix, ] + func_definitions
+
 	# each file has it's own list of processed lines:
-	all_files_text = [
+	all_files_code_blocks = [
 		_prepend_module_name(mdl_nm, mdl_lines)
 		for mdl_nm, mdl_lines in modules_sorted_text
 	]
 
-	prefixes: _t.List[_t.List[_str_h]] = [
+	prefix_blocks: _t.List[_t.List[_str_h]] = [
 		lines for lines, do_include in(
 			(first_comment_block, first_comment_block),
-			([_enum_import_replace], comm_data.imported_enum),
-			([_SwigPyObject_import_replace], comm_data.imported_SwigPyObject),
-			(init_lines, init_lines),
+			(_enum_import_lines, comm_data.imported_enum),
+			(_SwigPyObject_import_lines, comm_data.imported_SwigPyObject),
 		) if do_include
 	]
-	all_files_text = prefixes + all_files_text + func_definitions
+
+	prefix_lines: _t.List[_str_h] = list(_chain(
+		*_join_non_empty_iterables_with([''] * 2, *prefix_blocks)
+	))
+	all_files_text: _t.List[_str_h] = list(_chain(
+		*_join_non_empty_iterables_with([''] * 3, init_lines, *all_files_code_blocks)
+	))
+	func_lines: _t.List[_str_h] = list(_chain(
+		*_join_non_empty_iterables_with([''] * 1, *func_definitions)
+	))
 
 	with open(trg_fl, 'wt', encoding='utf-8', newline='') as out_fl:
 		out_fl.writelines(
 			l + '\n'
-			for l in _chain(*all_files_text)
+			for l in _chain(*_join_non_empty_iterables_with(
+				[''] * 3,
+				prefix_lines, all_files_text, func_lines
+			))
 		)
 
 	print(f'\nCombined skeleton saved:\n{trg_fl}')
